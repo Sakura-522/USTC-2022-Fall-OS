@@ -106,6 +106,16 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
+  p->alarm_interval = 0;
+  p->total_ticks = 0;
+  p->handler = (void*)0;
+  p->is_handler_in = 1;
+
+  // Allocate a copytrapframe page.
+  if((p->copytrapframe = (struct trapframe *)kalloc()) == 0){
+    release(&p->lock);
+    return 0;
+  }
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -150,6 +160,11 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->alarm_interval = 0;
+  p->handler = (void*)0;
+  p->total_ticks = 0;
+  if(p->copytrapframe)
+    kfree((void*)p->copytrapframe);
 }
 
 // Create a user page table for a given process,
@@ -276,9 +291,6 @@ fork(void)
   np->sz = p->sz;
 
   np->parent = p;
-
-  //copy the mask
-  np->mask = p->mask;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -486,10 +498,14 @@ scheduler(void)
       }
       release(&p->lock);
     }
+#if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
       asm volatile("wfi");
     }
+#else
+    ;
+#endif
   }
 }
 
@@ -695,19 +711,4 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
-}
-
-
-int proc_size(void)
-{
-  int i;
-  int n = 0;
-  for (i = 0; i < NPROC; i++)
-  {
-    if (proc[i].state != UNUSED) 
-    {
-      n++;
-    }
-  }
-  return n;
 }
