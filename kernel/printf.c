@@ -118,7 +118,6 @@ void
 panic(char *s)
 {
   pr.locking = 0;
-  backtrace();
   printf("panic: ");
   printf(s);
   printf("\n");
@@ -132,21 +131,4 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
-}
-
-void 
-backtrace(void)
-{
-  printf("backtrace:\n");
-
-  uint64 addr = r_fp();
-  uint64 return_addr;
-  uint64 bottom = PGROUNDUP(addr);
-  while (addr < bottom)
-  {
-    return_addr = *((uint64*)(addr-8));
-    addr = *((uint64*)(addr-16));
-    printf("%p\n", return_addr);
-  }
-  return;
 }

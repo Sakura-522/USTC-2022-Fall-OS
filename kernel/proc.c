@@ -106,16 +106,6 @@ allocproc(void)
 
 found:
   p->pid = allocpid();
-  p->alarm_interval = 0;
-  p->total_ticks = 0;
-  p->handler = (void*)0;
-  p->is_handler_in = 1;
-
-  // Allocate a copytrapframe page.
-  if((p->copytrapframe = (struct trapframe *)kalloc()) == 0){
-    release(&p->lock);
-    return 0;
-  }
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -160,11 +150,6 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
-  p->alarm_interval = 0;
-  p->handler = (void*)0;
-  p->total_ticks = 0;
-  if(p->copytrapframe)
-    kfree((void*)p->copytrapframe);
 }
 
 // Create a user page table for a given process,
@@ -479,9 +464,12 @@ scheduler(void)
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
     
-    int found = 0;
+    int nproc = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
+      if(p->state != UNUSED) {
+        nproc++;
+      }
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
@@ -493,19 +481,13 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
-        found = 1;
       }
       release(&p->lock);
     }
-#if !defined (LAB_FS)
-    if(found == 0) {
+    if(nproc <= 2) {   // only init and sh exist
       intr_on();
       asm volatile("wfi");
     }
-#else
-    ;
-#endif
   }
 }
 
