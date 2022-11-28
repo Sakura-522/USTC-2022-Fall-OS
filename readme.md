@@ -1,3 +1,3 @@
-# 实验3 Thread
+# 实验4 page tables
 
-具体内容见OS_LAB3.pdf
+具体见OS_LAB4.pdf
