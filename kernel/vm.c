@@ -5,8 +5,6 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-#include "spinlock.h"
-#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -31,9 +29,6 @@ kvminit()
 
   // virtio mmio disk interface
   kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // CLINT
-  kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
   kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
@@ -70,7 +65,7 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
-pte_t *
+static pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
   if(va >= MAXVA)
@@ -121,26 +116,6 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
     panic("kvmmap");
-}
-
-// translate a kernel virtual address to
-// a physical address. only needed for
-// addresses on the stack.
-// assumes va is page aligned.
-uint64
-kvmpa(uint64 va)
-{
-  uint64 off = va % PGSIZE;
-  pte_t *pte;
-  uint64 pa;
-  
-  pte = walk(myproc()->kpagetable, va, 0);
-  if(pte == 0)
-    panic("kvmpa");
-  if((*pte & PTE_V) == 0)
-    panic("kvmpa");
-  pa = PTE2PA(*pte);
-  return pa+off;
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
@@ -381,24 +356,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  // uint64 n, va0, pa0;
+  uint64 n, va0, pa0;
 
-  // while(len > 0){
-  //   va0 = PGROUNDDOWN(srcva);
-  //   pa0 = walkaddr(pagetable, va0);
-  //   if(pa0 == 0)
-  //     return -1;
-  //   n = PGSIZE - (srcva - va0);
-  //   if(n > len)
-  //     n = len;
-  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  while(len > 0){
+    va0 = PGROUNDDOWN(srcva);
+    pa0 = walkaddr(pagetable, va0);
+    if(pa0 == 0)
+      return -1;
+    n = PGSIZE - (srcva - va0);
+    if(n > len)
+      n = len;
+    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-  //   len -= n;
-  //   dst += n;
-  //   srcva = va0 + PGSIZE;
-  // }
-  // return 0;
-  return copyin_new(pagetable,dst,srcva,len);
+    len -= n;
+    dst += n;
+    srcva = va0 + PGSIZE;
+  }
+  return 0;
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -408,135 +382,38 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  // uint64 n, va0, pa0;
-  // int got_null = 0;
+  uint64 n, va0, pa0;
+  int got_null = 0;
 
-  // while(got_null == 0 && max > 0){
-  //   va0 = PGROUNDDOWN(srcva);
-  //   pa0 = walkaddr(pagetable, va0);
-  //   if(pa0 == 0)
-  //     return -1;
-  //   n = PGSIZE - (srcva - va0);
-  //   if(n > max)
-  //     n = max;
+  while(got_null == 0 && max > 0){
+    va0 = PGROUNDDOWN(srcva);
+    pa0 = walkaddr(pagetable, va0);
+    if(pa0 == 0)
+      return -1;
+    n = PGSIZE - (srcva - va0);
+    if(n > max)
+      n = max;
 
-  //   char *p = (char *) (pa0 + (srcva - va0));
-  //   while(n > 0){
-  //     if(*p == '\0'){
-  //       *dst = '\0';
-  //       got_null = 1;
-  //       break;
-  //     } else {
-  //       *dst = *p;
-  //     }
-  //     --n;
-  //     --max;
-  //     p++;
-  //     dst++;
-  //   }
-
-  //   srcva = va0 + PGSIZE;
-  // }
-  // if(got_null){
-  //   return 0;
-  // } else {
-  //   return -1;
-  // }
-  return copyinstr_new(pagetable,dst,srcva,max);
-}
-
-void 
-_vmprint(pagetable_t pagetable, int level)
-{
-  for (int i = 0; i < 512; i++)
-  {
-    pte_t pte = pagetable[i];
-    if (pte & PTE_V) // 页表项有效
-    {
-      uint64 child = PTE2PA(pte); // 转换到物理地址
-      for (int j = 0; j < level; j++)
-      {
-        if(j)printf(" ");
-        printf("..");
+    char *p = (char *) (pa0 + (srcva - va0));
+    while(n > 0){
+      if(*p == '\0'){
+        *dst = '\0';
+        got_null = 1;
+        break;
+      } else {
+        *dst = *p;
       }
-      printf("%d: pte %p pa %p\n", i, pte, child);
-    
-      if((pte & (PTE_R|PTE_W|PTE_X)) == 0)
-      {
-        _vmprint((pagetable_t)child, level + 1);
-      }
+      --n;
+      --max;
+      p++;
+      dst++;
     }
+
+    srcva = va0 + PGSIZE;
   }
-  
-}
-
-
-void
-vmprint(pagetable_t pagetable)
-{
-  printf("page table %p\n", pagetable);
-  _vmprint(pagetable, 1);
-  return;
-}
-
-void
-ukvmmap(pagetable_t kpagetable,uint64 va, uint64 pa, uint64 sz, int perm)
-{
-  if(mappages(kpagetable, va, sz, pa, perm) != 0)
-    panic("uvmmap");
-}
-
-pagetable_t
-ukvminit()
-{
-  pagetable_t kpagetable = (pagetable_t) kalloc();
-  memset(kpagetable, 0, PGSIZE);
-  ukvmmap(kpagetable,UART0, UART0, PGSIZE, PTE_R | PTE_W);
-  ukvmmap(kpagetable,VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-  ukvmmap(kpagetable,CLINT, CLINT, 0x10000, PTE_R | PTE_W);
-  ukvmmap(kpagetable,PLIC, PLIC, 0x400000, PTE_R | PTE_W);
-  ukvmmap(kpagetable,KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
-  ukvmmap(kpagetable,(uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
-  ukvmmap(kpagetable,TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
-  return kpagetable;
-}
-
-void 
-proc_freewalk(pagetable_t pagetable) 
-{
-  for (int i = 0; i < 512; i++) {
-    pte_t pte = pagetable[i];
-    if (pte & PTE_V) 
-    {
-      pagetable[i] = 0;
-      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) 
-      {
-        uint64 child = PTE2PA(pte);
-        proc_freewalk((pagetable_t)child);
-      }
-    }
-  }
-  kfree((void*)pagetable);
-}
-
-void
-u2kvmcopy(pagetable_t pagetable, pagetable_t kpagetable, uint64 oldsz, uint64 newsz)
-{
-  pte_t *pte_from, *pte_to;
-  uint64 a, pa;
-  uint flags;
-   
-  if (newsz < oldsz)
-    return;
-  oldsz = PGROUNDUP(oldsz);
-  for (a = oldsz; a < newsz; a += PGSIZE)
-  {
-    if ((pte_from = walk(pagetable, a, 0)) == 0)
-      panic("u2kvmcopy: pte should exist");
-    if ((pte_to = walk(kpagetable, a, 1)) == 0)  // copy the pte to the same address at kernel page table
-      panic("u2kvmcopy: walk fails");
-    pa = PTE2PA(*pte_from);
-    flags = (PTE_FLAGS(*pte_from) & (~PTE_U));
-    *pte_to = PA2PTE(pa) | flags;
+  if(got_null){
+    return 0;
+  } else {
+    return -1;
   }
 }
