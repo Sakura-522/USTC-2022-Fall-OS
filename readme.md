@@ -1,3 +1,3 @@
-# 实验4 page tables
+# 实验5 locks
 
 具体见OS_LAB5.pdf
